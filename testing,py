@@ -1,0 +1,160 @@
+from telethon import TelegramClient, events
+from telethon.tl.types import User, Channel, Chat
+import asyncio
+import os
+import random
+from datetime import datetime
+from dotenv import load_dotenv
+
+load_dotenv()
+
+API_ID = os.getenv('API_ID')
+API_HASH = os.getenv('API_HASH')
+NOMOR_HP = os.getenv('NOMOR_HP')
+NAMA_SESI = "sesi_broadcast"
+
+JEDA_MINIMAL = 30
+JEDA_MAKSIMAL = 90
+BATAS_PESAN = 20
+JEDA_BATCH = 900
+BATAS_KARAKTER = 500
+
+riwayat_pesan = []
+
+klien = TelegramClient(NAMA_SESI, API_ID, API_HASH)
+
+def cek_batas_pesan():
+    waktu_sekarang = datetime.now()
+    satu_jam_lalu = [waktu for waktu in riwayat_pesan if (waktu_sekarang - waktu).seconds < 3600]
+    riwayat_pesan.clear()
+    riwayat_pesan.extend(satu_jam_lalu)
+    return len(riwayat_pesan) >= BATAS_PESAN
+
+@klien.on(events.NewMessage(pattern=r'\.siaruser (.+)'))
+async def siar_ke_user(event):
+    if not event.is_private:
+        return
+
+    pesan = event.pattern_match.group(1)
+    
+    if len(pesan) > BATAS_KARAKTER:
+        await event.respond(f'❌ Pesan terlalu panjang! Maksimal {BATAS_KARAKTER} karakter')
+        return
+
+    berhasil = 0
+    gagal = 0
+    total_target = 0
+    
+    pesan_status = await event.respond('🔄 Memulai pengiriman pesan ke pengguna...')
+    
+    async for dialog in klien.iter_dialogs():
+        if isinstance(dialog.entity, User) and not dialog.entity.bot and not dialog.entity.is_self:
+            total_target += 1
+    
+    if total_target == 0:
+        await pesan_status.edit('❌ Tidak ada target user yang ditemukan')
+        return
+    
+    batch_count = 0
+    
+    async for dialog in klien.iter_dialogs():
+        entitas = dialog.entity
+        
+        if isinstance(entitas, User) and not entitas.bot and not entitas.is_self:
+            if cek_batas_pesan():
+                await pesan_status.edit(f'⚠️ Batas pengiriman tercapai! Tunggu 1 jam\nBerhasil: {berhasil}\nGagal: {gagal}')
+                return
+                
+            try:
+                jeda = random.randint(JEDA_MINIMAL, JEDA_MAKSIMAL)
+                await asyncio.sleep(jeda)
+                
+                await klien.send_message(entitas.id, pesan)
+                berhasil += 1
+                batch_count += 1
+                riwayat_pesan.append(datetime.now())
+                
+                if berhasil % 5 == 0:
+                    await pesan_status.edit(f'🔄 Proses: {berhasil}/{total_target} terkirim, {gagal} gagal')
+                
+                if batch_count >= BATAS_PESAN:
+                    await pesan_status.edit(f'😴 Istirahat {JEDA_BATCH//60} menit...\nBerhasil: {berhasil}\nGagal: {gagal}')
+                    await asyncio.sleep(JEDA_BATCH)
+                    batch_count = 0
+                    
+            except Exception as e:
+                print(f"Gagal mengirim ke {entitas.id}: {e}")
+                gagal += 1
+                
+    await pesan_status.edit(f'✅ Pengiriman selesai!\nBerhasil: {berhasil}\nGagal: {gagal}')
+
+@klien.on(events.NewMessage(pattern=r'\.siargrup (.+)'))
+async def siar_ke_grup(event):
+    if not event.is_private:
+        return
+
+    pesan = event.pattern_match.group(1)
+    berhasil = 0
+    gagal = 0
+    
+    pesan_status = await event.respond('🔄 Memulai pengiriman pesan ke grup...')
+    
+    async for dialog in klien.iter_dialogs():
+        entitas = dialog.entity
+        
+        if isinstance(entitas, (Channel, Chat)):
+            try:
+                await klien.send_message(entitas.id, pesan)
+                berhasil += 1
+                if berhasil % 5 == 0:
+                    await pesan_status.edit(f'🔄 Proses: {berhasil} terkirim, {gagal} gagal')
+                await asyncio.sleep(1)
+            except Exception as e:
+                print(f"Gagal mengirim ke {entitas.id}: {e}")
+                gagal += 1
+                
+    await pesan_status.edit(f'✅ Pengiriman selesai!\nBerhasil: {berhasil}\nGagal: {gagal}')
+
+@klien.on(events.NewMessage(pattern=r'\.siarsemua (.+)'))
+async def siar_ke_semua(event):
+    if not event.is_private:
+        return
+
+    pesan = event.pattern_match.group(1)
+    berhasil = 0
+    gagal = 0
+    
+    pesan_status = await event.respond('🔄 Memulai pengiriman pesan ke semua...')
+    
+    async for dialog in klien.iter_dialogs():
+        entitas = dialog.entity
+        
+        if getattr(entitas, 'is_self', False):
+            continue
+            
+        try:
+            await klien.send_message(entitas.id, pesan)
+            berhasil += 1
+            if berhasil % 5 == 0:
+                await pesan_status.edit(f'🔄 Proses: {berhasil} terkirim, {gagal} gagal')
+            await asyncio.sleep(1)
+        except Exception as e:
+            print(f"Gagal mengirim ke {entitas.id}: {e}")
+            gagal += 1
+            
+    await pesan_status.edit(f'✅ Pengiriman selesai!\nBerhasil: {berhasil}\nGagal: {gagal}')
+
+@klien.on(events.NewMessage(pattern=r'\.hidup'))
+async def cek_hidup(event):
+    if event.is_private:
+        await event.respond("🟢 Userbot aktif dan siap digunakan!")
+
+@klien.on(events.NewMessage(pattern=r'\.status'))
+async def cek_status(event):
+    if event.is_private:
+        pesan_satu_jam = len([waktu for waktu in riwayat_pesan if (datetime.now() - waktu).seconds < 3600])
+        await event.respond(f"📊 Status Pengiriman:\nPesan terkirim 1 jam terakhir: {pesan_satu_jam}/{BATAS_PESAN}")
+
+print("Menjalankan userbot...")
+klien.start(phone=NOMOR_HP)
+klien.run_until_disconnected()
